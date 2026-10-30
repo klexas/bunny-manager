@@ -696,6 +696,111 @@ async function viewStream() {
   )}</div>`);
 }
 
+// ----- Service status -----
+
+const STATUS_PAGE = "https://status.bunny.net";
+const STATUS_POLL_MS = 60 * 1000;
+const INDICATOR_BADGES = { none: "ok", minor: "accent", major: "warn", critical: "warn" };
+const COMPONENT_STATUS = {
+  operational: { cls: "ok", label: "Operational" },
+  degraded_performance: { cls: "accent", label: "Degraded performance" },
+  partial_outage: { cls: "warn", label: "Partial outage" },
+  major_outage: { cls: "warn", label: "Major outage" },
+  under_maintenance: { cls: "", label: "Maintenance" },
+};
+
+const isLocked = () => state.status.passwordRequired && !state.status.authenticated;
+
+// The headline can read "All Systems Operational" while an incident is still open,
+// so open incidents count towards the overall state too.
+function serviceSummary(s) {
+  const open = s.incidents.length;
+  if (s.status.indicator === "none" && open) return { cls: "accent", label: `${open} open incident${open === 1 ? "" : "s"}` };
+  return { cls: INDICATOR_BADGES[s.status.indicator] || "", label: s.status.description };
+}
+
+function paintStatusPill() {
+  const el = $("#status-pill");
+  const s = state.service;
+  el.hidden = isLocked() || (!s && !state.serviceError);
+  const { cls, label } = s ? serviceSummary(s) : { cls: "", label: "Status unavailable" };
+  el.className = `badge status-pill ${cls}`;
+  el.title = `bunny.net status: ${label}`;
+  el.setAttribute("aria-label", el.title);
+  el.innerHTML = `<span class="hide-sm">${esc(label)}</span>`;
+}
+
+async function loadServiceStatus() {
+  try {
+    state.service = await request("GET", "/api/service-status");
+    state.serviceError = null;
+  } catch (err) {
+    state.serviceError = err;
+  }
+  paintStatusPill();
+}
+
+async function pollServiceStatus() {
+  if (document.hidden || isLocked()) return;
+  await loadServiceStatus();
+  if (location.hash.startsWith("#/status") && state.service) paintServiceStatus();
+}
+
+function incidentItem(i) {
+  const [latest, ...earlier] = i.incident_updates || [];
+  const update = (u) => `<p class="incident-body">${esc(u.body)}</p><div class="muted">${esc(u.status)} · ${esc(fmtDate(u.display_at || u.created_at))}</div>`;
+  return `<div class="incident">
+    <div class="incident-title">
+      <a href="${STATUS_PAGE}/incidents/${encodeURIComponent(i.id)}" target="_blank" rel="noopener">${esc(i.name)}</a>
+      <span class="badge">${esc(i.status)}</span>
+    </div>
+    ${i.scheduled_for ? `<div class="muted">${esc(fmtDate(i.scheduled_for))} – ${esc(fmtDate(i.scheduled_until))}</div>` : ""}
+    ${latest ? update(latest) : ""}
+    ${earlier.length ? `<details><summary>${earlier.length} earlier update${earlier.length === 1 ? "" : "s"}</summary>${earlier.map(update).join("")}</details>` : ""}
+  </div>`;
+}
+
+function paintServiceStatus() {
+  const s = state.service;
+  const { cls, label } = serviceSummary(s);
+  const groups = new Map(s.components.filter((c) => c.group).map((c) => [c.id, c.name]));
+  const components = s.components.filter((c) => !c.group);
+  const affected = components.filter((c) => c.status !== "operational");
+  const ordered = [...affected, ...components.filter((c) => c.status === "operational")];
+  // Keep expanded incident history open across background refreshes.
+  const scrollY = window.scrollY;
+  const openDetails = [...document.querySelectorAll(".incident details")].map((d) => d.open);
+  setView(`
+    ${s.stale ? `<div class="notice">Could not reach the status page. Showing data from ${esc(fmtDate(s.fetchedAt))}.</div>` : ""}
+    <div class="stats">
+      <div class="stat"><div class="label">Overall</div><div class="value" style="font-size:18px"><span class="badge status-pill ${cls}">${esc(label)}</span></div></div>
+      <div class="stat"><div class="label">Open incidents</div><div class="value">${fmtNum(s.incidents.length)}</div></div>
+      <div class="stat"><div class="label">Maintenance</div><div class="value">${fmtNum(s.scheduled_maintenances.length)}</div></div>
+      <div class="stat"><div class="label">Components affected</div><div class="value">${fmtNum(affected.length)}</div><div class="sub">of ${fmtNum(components.length)}</div></div>
+    </div>
+    ${s.incidents.length ? `<div class="card"><div class="card-head"><h2>Open incidents</h2></div>${s.incidents.map(incidentItem).join("")}</div>` : ""}
+    ${s.scheduled_maintenances.length ? `<div class="card"><div class="card-head"><h2>Maintenance</h2></div>${s.scheduled_maintenances.map(incidentItem).join("")}</div>` : ""}
+    <div class="card">
+      <div class="card-head"><h2>Components</h2><span class="muted">Updated ${esc(fmtDate(s.fetchedAt))}</span></div>
+      <div class="status-grid">${ordered
+        .map((c) => {
+          const st = COMPONENT_STATUS[c.status] || { cls: "", label: c.status };
+          return `<div class="status-row"><span>${c.group_id && groups.has(c.group_id) ? `<span class="muted">${esc(groups.get(c.group_id))} /</span> ` : ""}${esc(c.name)}</span><span class="badge ${st.cls}">${esc(st.label)}</span></div>`;
+        })
+        .join("")}</div>
+    </div>`);
+  document.querySelectorAll(".incident details").forEach((d, i) => (d.open = Boolean(openDetails[i])));
+  window.scrollTo(0, scrollY);
+}
+
+async function viewStatus() {
+  setPage("Service Status", `<a class="btn" href="${STATUS_PAGE}" target="_blank" rel="noopener">Open status page</a><button class="btn" data-action="reload">Refresh</button>`);
+  if (!state.service) loading();
+  await loadServiceStatus();
+  if (!state.service) throw state.serviceError;
+  paintServiceStatus();
+}
+
 // ----- CLI console -----
 
 const CLI_EXAMPLES = ["whoami", "--help", "storage zones list", "dns zones list", "scripts list", "db list", "sites list", "stream libraries list", "api GET /pullzone", "storage regions"];
@@ -845,8 +950,10 @@ async function render() {
   $("#nav-cli").hidden = !state.status.allowCli;
   $("#sidebar-foot").innerHTML = state.status.cliVersion ? `bunny CLI ${esc(state.status.cliVersion)}` : "";
 
-  if (state.status.passwordRequired && !state.status.authenticated) return viewLogin();
-  if (!state.apiKey && !state.status.hasServerKey && section !== "settings") return viewWelcome();
+  paintStatusPill();
+  if (isLocked()) return viewLogin();
+  if (!state.service && section !== "status") loadServiceStatus();
+  if (!state.apiKey && !state.status.hasServerKey && section !== "settings" && section !== "status") return viewWelcome();
 
   try {
     switch (section) {
@@ -861,6 +968,8 @@ async function render() {
         return rest[0] ? await viewDnsZone(rest[0]) : await viewDnsZones();
       case "stream":
         return await viewStream();
+      case "status":
+        return await viewStatus();
       case "cli":
         return viewCli();
       case "settings":
@@ -1128,4 +1237,5 @@ window.addEventListener("hashchange", render);
     return;
   }
   render();
+  setInterval(pollServiceStatus, STATUS_POLL_MS);
 })();

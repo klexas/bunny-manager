@@ -13,6 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
 const API_URL = (process.env.BUNNYNET_API_URL || "https://api.bunny.net").replace(/\/+$/, "");
+const STATUS_URL = (process.env.BUNNYNET_STATUS_URL || "https://status.bunny.net").replace(/\/+$/, "");
 const SERVER_API_KEY = (process.env.BUNNYNET_API_KEY || "").trim();
 const APP_PASSWORD = process.env.APP_PASSWORD || "";
 const ALLOW_CLI = !/^(0|false|no|off)$/i.test(process.env.ALLOW_CLI || "true");
@@ -23,6 +24,8 @@ const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const MAX_JSON_BODY = 2 * 1024 * 1024;
 const MAX_CLI_OUTPUT = 2 * 1024 * 1024;
+const STATUS_CACHE_MS = 30 * 1000;
+const STATUS_TIMEOUT_MS = 10 * 1000;
 
 // CLI commands that need a browser or a TTY and make no sense from the web console.
 const BLOCKED_CLI = {
@@ -138,6 +141,35 @@ async function handleProxy(req, res, url) {
   const body = hasBody ? (await readBody(req)).toString("utf8") : undefined;
   const upstream = await bunnyFetch(key, req.method, sub + url.search, body || undefined);
   await relay(res, upstream);
+}
+
+// Service status (public Statuspage API, no key needed; the CSP keeps the browser same-origin)
+
+let statusCache = null; // { data, fetchedAt, exp }
+let statusFetch = null;
+
+async function fetchServiceStatus() {
+  const r = await fetch(`${STATUS_URL}/api/v2/summary.json`, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+  });
+  if (!r.ok) throw Object.assign(new Error(`The bunny.net status page returned HTTP ${r.status}`), { status: 502 });
+  return r.json();
+}
+
+async function handleServiceStatus(res) {
+  if (!statusCache || statusCache.exp < Date.now()) {
+    statusFetch ||= fetchServiceStatus().finally(() => (statusFetch = null));
+    try {
+      const data = await statusFetch;
+      statusCache = { data, fetchedAt: new Date().toISOString(), exp: Date.now() + STATUS_CACHE_MS };
+    } catch (err) {
+      if (!statusCache) throw err;
+      console.warn(`Serving stale service status: ${err.message}`);
+      return sendJson(res, 200, { ...statusCache.data, fetchedAt: statusCache.fetchedAt, stale: true });
+    }
+  }
+  sendJson(res, 200, { ...statusCache.data, fetchedAt: statusCache.fetchedAt, stale: false });
 }
 
 // Storage (Edge Storage API needs the zone password + regional host)
@@ -407,6 +439,7 @@ async function route(req, res) {
 
   if (!isAuthenticated(req)) return sendJson(res, 401, { error: "Login required", loginRequired: true });
 
+  if (p === "/api/service-status" && req.method === "GET") return handleServiceStatus(res);
   if (p === "/api/bunny" || p.startsWith("/api/bunny/")) return handleProxy(req, res, url);
   if (p.startsWith("/api/storage/")) return handleStorage(req, res, url);
   if (p === "/api/cli" && req.method === "POST") return handleCli(req, res);
