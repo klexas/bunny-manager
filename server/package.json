@@ -1,6 +1,6 @@
 {
   "name": "bunny-manager",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Web UI + bunny CLI for managing bunny.net resources",
   "private": true,
   "type": "module",
