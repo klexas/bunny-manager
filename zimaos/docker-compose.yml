@@ -1,0 +1,68 @@
+# ZimaOS / CasaOS app definition.
+name: bunny-manager
+services:
+  bunny-manager:
+    image: ghcr.io/klexas/bunny-manager:latest
+    container_name: bunny-manager
+    restart: unless-stopped
+    network_mode: bridge
+    ports:
+      - target: 8080
+        published: "8095"
+        protocol: tcp
+    environment:
+      BUNNYNET_API_KEY: ""
+      APP_PASSWORD: "change-me"
+      ALLOW_CLI: "true"
+      PUID: "1000"
+      PGID: "1000"
+      TZ: UTC
+    volumes:
+      - type: bind
+        source: /DATA/AppData/bunny-manager
+        target: /data
+    x-casaos:
+      envs:
+        - container: BUNNYNET_API_KEY
+          description:
+            en_us: bunny.net account API key (can be entered in the web UI instead)
+        - container: APP_PASSWORD
+          description:
+            en_us: Password required to open the web UI
+        - container: ALLOW_CLI
+          description:
+            en_us: Enable the in-browser bunny CLI console (true/false)
+        - container: PUID
+          description:
+            en_us: User ID the app runs as
+        - container: PGID
+          description:
+            en_us: Group ID the app runs as
+      ports:
+        - container: "8080"
+          description:
+            en_us: Web UI
+      volumes:
+        - container: /data
+          description:
+            en_us: CLI config and workspace
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: bunny-manager
+  author: self
+  developer: self
+  category: Developer
+  title:
+    en_us: Bunny Manager
+  tagline:
+    en_us: Manage bunny.net from your browser
+  description:
+    en_us: A simple web UI plus the official bunny CLI for managing bunny.net pull zones, storage, DNS and Stream with your API key.
+  icon: https://raw.githubusercontent.com/klexas/bunny-manager/main/server/public/icon.svg
+  index: /
+  port_map: "8095"
+  scheme: http
+  store_app_id: bunny-manager

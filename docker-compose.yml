@@ -1,0 +1,16 @@
+# Local use:  cp .env.example .env  &&  docker compose up -d --build
+# Then open http://localhost:8080
+services:
+  bunny-manager:
+    build: .
+    image: bunny-manager:latest
+    container_name: bunny-manager
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      BUNNYNET_API_KEY: ${BUNNYNET_API_KEY:-}
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      ALLOW_CLI: "true"
+    volumes:
+      - ./data:/data
