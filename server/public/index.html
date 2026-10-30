@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bunny Manager</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#/">
+        <img src="icon.svg" alt="" width="28" height="28">
+        <span>Bunny Manager</span>
+      </a>
+      <nav id="nav">
+        <a href="#/" data-nav="dashboard">Dashboard</a>
+        <a href="#/pullzones" data-nav="pullzones">Pull Zones</a>
+        <a href="#/storage" data-nav="storage">Storage</a>
+        <a href="#/dns" data-nav="dns">DNS</a>
+        <a href="#/stream" data-nav="stream">Stream</a>
+        <a href="#/cli" data-nav="cli" id="nav-cli">CLI Console</a>
+        <a href="#/settings" data-nav="settings">Settings</a>
+      </nav>
+      <div class="sidebar-foot" id="sidebar-foot"></div>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" data-action="toggle-menu" aria-label="Menu">☰</button>
+        <h1 id="page-title">Dashboard</h1>
+        <div class="topbar-actions" id="topbar-actions"></div>
+      </header>
+      <main id="view" class="view"></main>
+    </div>
+  </div>
+  <dialog id="dialog"></dialog>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
