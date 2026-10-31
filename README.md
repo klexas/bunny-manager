@@ -73,6 +73,12 @@ cd server
 npm install -g @bunny.net/cli   # optional, for the console
 BUNNYNET_API_KEY=... node server.js
 ```
-
 There are no npm dependencies; the server uses only Node built-ins (Node 20+).
 
+## Screens
+<img width="500" height="200" alt="Screenshot 2026-10-31 012357" src="https://github.com/user-attachments/assets/fbc8e5e8-c9fa-4866-b5f6-d9dc93fd55d8" />
+<img width="500" height="200" alt="Screenshot 2026-10-31 012332" src="https://github.com/user-attachments/assets/cf05949e-4311-46d5-adb3-ad7b427360b8" />
+<img width="500" height="200" alt="Screenshot 2026-10-31 012300" src="https://github.com/user-attachments/assets/a5f5f028-b876-4da8-b786-92ea067006a8" />
+<img width="500" height="200" alt="Screenshot 2026-10-31 012012" src="https://github.com/user-attachments/assets/9c3a2d3b-1e25-4b98-9f83-5b4713f91387" />
+<img width="500" height="200" alt="Screenshot 2026-10-31 011942" src="https://github.com/user-attachments/assets/da6a8a58-de09-48e0-8f22-4a386c748aca" />
+<img width="500" height="200" alt="image" src="https://github.com/user-attachments/assets/cea54b66-2418-441f-9ead-52a6fb84e2ae" />
