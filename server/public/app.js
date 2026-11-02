@@ -544,14 +544,12 @@ async function uploadFiles(files) {
 
 async function downloadFile(name) {
   const { zone, dir } = state.current;
-  const res = await fetch(`/api/storage/${zone.Id}/file?path=${encodeURIComponent(dir + name)}`, { headers: headers() });
-  if (!res.ok) throw new Error(`Download failed (HTTP ${res.status})`);
-  const blob = await res.blob();
+  // A one time link lets the browser stream the file to disk instead of holding it in memory
+  const { url } = await request("POST", `/api/storage/${zone.Id}/download?path=${encodeURIComponent(dir + name)}`);
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  a.href = url;
   a.download = name;
   a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 
 // ----- DNS -----

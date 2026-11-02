@@ -2,9 +2,12 @@
 // proxies the bunny.net API (keeping keys off third-party origins) and runs
 // the official bunny CLI on request.
 import http from "node:http";
+import https from "node:https";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { spawn, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -18,7 +21,7 @@ const SERVER_API_KEY = (process.env.BUNNYNET_API_KEY || "").trim();
 const APP_PASSWORD = process.env.APP_PASSWORD || "";
 const ALLOW_CLI = !/^(0|false|no|off)$/i.test(process.env.ALLOW_CLI || "true");
 const CLI_BIN = process.env.BUNNY_CLI_BIN || "bunny";
-const CLI_TIMEOUT_MS = Number(process.env.CLI_TIMEOUT || 120) * 1000;
+const CLI_TIMEOUT_MS = (Number(process.env.CLI_TIMEOUT) || 120) * 1000;
 const CLI_WORKDIR = process.env.CLI_WORKDIR || path.join(process.env.DATA_DIR || "/data", "workspace");
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -26,6 +29,9 @@ const MAX_JSON_BODY = 2 * 1024 * 1024;
 const MAX_CLI_OUTPUT = 2 * 1024 * 1024;
 const STATUS_CACHE_MS = 30 * 1000;
 const STATUS_TIMEOUT_MS = 10 * 1000;
+const BODY_TIMEOUT_MS = 60 * 1000;
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const DOWNLOAD_TTL_MS = 60 * 1000;
 
 // CLI commands that need a browser or a TTY and make no sense from the web console.
 const BLOCKED_CLI = {
@@ -78,17 +84,26 @@ function readBody(req, limit = MAX_JSON_BODY) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    // The server has no overall request timeout so small bodies get their own deadline.
+    const timer = setTimeout(() => req.destroy(new Error("Timed out reading request body")), BODY_TIMEOUT_MS);
     req.on("data", (c) => {
       size += c.length;
       if (size > limit) {
+        clearTimeout(timer);
         reject(Object.assign(new Error("Request body too large"), { status: 413 }));
         req.destroy();
         return;
       }
       chunks.push(c);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
+    req.on("end", () => {
+      clearTimeout(timer);
+      resolve(Buffer.concat(chunks));
+    });
+    req.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
@@ -203,8 +218,49 @@ function storageUrl(zone, filePath) {
   return `https://${zone.host}/${encodeURIComponent(zone.name)}/${clean}${trailing}`;
 }
 
+const downloads = new Map(); // token -> { zone, path }
+
+function createDownload(zone, filePath) {
+  const token = crypto.randomBytes(32).toString("hex");
+  downloads.set(token, { zone, path: filePath });
+  setTimeout(() => downloads.delete(token), DOWNLOAD_TTL_MS).unref();
+  return `/api/download/${token}`;
+}
+
+async function handleDownload(res, token) {
+  const download = downloads.get(token);
+  if (!download) return sendJson(res, 404, { error: "Download link expired" });
+  downloads.delete(token);
+  const { zone, path: filePath } = download;
+  const r = await fetch(storageUrl(zone, filePath), { headers: { AccessKey: zone.password } });
+  if (!r.ok) return relay(res, r);
+  const name = filePath.split("/").filter(Boolean).pop() || "download";
+  // fetch decompresses the body, so an encoded upstream length would be wrong.
+  const length = r.headers.get("content-encoding") ? null : r.headers.get("content-length");
+  res.writeHead(200, {
+    "Content-Type": r.headers.get("content-type") || "application/octet-stream",
+    "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+    "Cache-Control": "no-store",
+    ...(length ? { "Content-Length": length } : {}),
+  });
+  await pipeline(Readable.fromWeb(r.body), res);
+}
+
+// Uses https.request because timeout that can fire while a slow upload is still being written.
+function uploadFile(req, res, zone, filePath) {
+  const headers = { AccessKey: zone.password, "Content-Type": "application/octet-stream" };
+  if (req.headers["content-length"]) headers["Content-Length"] = req.headers["content-length"];
+  return new Promise((resolve, reject) => {
+    const upstream = https.request(storageUrl(zone, filePath), { method: "PUT", headers }, (r) => {
+      res.writeHead(r.statusCode, { "Content-Type": r.headers["content-type"] || "application/json", "Cache-Control": "no-store" });
+      pipeline(r, res).then(resolve, reject);
+    });
+    pipeline(req, upstream).catch(reject);
+  });
+}
+
 async function handleStorage(req, res, url) {
-  // /api/storage/:zoneId/(list|file)
+  // /api/storage/:zoneId/(list|file|download)
   const [, , , zoneId, action] = url.pathname.split("/");
   const key = requireKey(req);
   const zone = await getStorageZone(key, zoneId);
@@ -216,30 +272,15 @@ async function handleStorage(req, res, url) {
     return relay(res, r);
   }
 
+  if (action === "download" && req.method === "POST") {
+    if (!p || p.endsWith("/")) throw Object.assign(new Error("A file path is required"), { status: 400 });
+    return sendJson(res, 200, { url: createDownload(zone, p) });
+  }
+
   if (action === "file") {
-    if (req.method === "GET") {
-      const r = await fetch(storageUrl(zone, p), { headers: { AccessKey: zone.password } });
-      if (!r.ok) return relay(res, r);
-      const name = p.split("/").filter(Boolean).pop() || "download";
-      res.writeHead(200, {
-        "Content-Type": r.headers.get("content-type") || "application/octet-stream",
-        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
-        ...(r.headers.get("content-length") ? { "Content-Length": r.headers.get("content-length") } : {}),
-      });
-      const reader = r.body.getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!res.write(value)) await new Promise((ok) => res.once("drain", ok));
-      }
-      return res.end();
-    }
     if (req.method === "PUT") {
       if (!p || p.endsWith("/")) throw Object.assign(new Error("A file path is required"), { status: 400 });
-      const headers = { AccessKey: zone.password, "Content-Type": "application/octet-stream" };
-      if (req.headers["content-length"]) headers["Content-Length"] = req.headers["content-length"];
-      const r = await fetch(storageUrl(zone, p), { method: "PUT", headers, body: req, duplex: "half" });
-      return relay(res, r);
+      return uploadFile(req, res, zone, p);
     }
     if (req.method === "DELETE") {
       if (!p) throw Object.assign(new Error("Refusing to delete the zone root"), { status: 400 });
@@ -409,6 +450,11 @@ async function route(req, res) {
     });
   }
 
+  if (p.startsWith("/api/download/") && req.method === "GET") {
+    if (!isAuthenticated(req)) return sendJson(res, 401, { error: "Login required", loginRequired: true });
+    return handleDownload(res, p.slice("/api/download/".length));
+  }
+
   // Every state-changing or data-reading API call must carry this header. Browsers
   // will not send a custom header cross-origin without a CORS preflight (which we
   // never approve), so other sites cannot drive this API through the user's browser.
@@ -447,14 +493,20 @@ async function route(req, res) {
   sendJson(res, 404, { error: "Not found" });
 }
 
-const server = http.createServer((req, res) => {
+// requestTimeout covers the whole request, which would cut off long uploads.
+// headersTimeout must be explicit because its default is capped by requestTimeout.
+const server = http.createServer({ requestTimeout: 0, headersTimeout: 60 * 1000 }, (req, res) => {
   route(req, res).catch((err) => {
+    if (req.socket.destroyed) return; // client went away mid-transfer
     const status = err.status || 502;
     if (status >= 500) console.error(`[${req.method} ${req.url}]`, err);
     if (res.headersSent) return res.end();
     sendJson(res, status, { error: err.message || "Internal error" });
   });
 });
+
+// Stalled connections are dropped instead.
+server.timeout = Math.max(IDLE_TIMEOUT_MS, CLI_TIMEOUT_MS + 30 * 1000);
 
 execFile(CLI_BIN, ["--version"], { timeout: 15000, env: { ...process.env, NO_COLOR: "1" } }, (err, stdout) => {
   cliVersion = err ? null : stdout.trim();
